@@ -1,0 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-ink-950 text-gray-200 font-sans antialiased;
+    min-height: 100vh;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-electric-500/60 ring-offset-2 ring-offset-ink-900;
+  }
+
+  ::selection {
+    @apply bg-electric-500/30 text-white;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.97] select-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-electric-600 text-white hover:bg-electric-500 hover:shadow-lg hover:shadow-electric-600/25;
+  }
+
+  .btn-danger {
+    @apply btn bg-crimson-600 text-white hover:bg-crimson-500 hover:shadow-lg hover:shadow-crimson-600/25;
+  }
+
+  .btn-ghost {
+    @apply btn bg-ink-700 text-gray-200 hover:bg-ink-600 border border-ink-600;
+  }
+
+  .btn-outline {
+    @apply btn bg-transparent text-electric-400 border border-electric-600/40 hover:bg-electric-600/10;
+  }
+
+  .input {
+    @apply w-full px-4 py-3 rounded-xl bg-ink-800 border border-ink-600 text-gray-100 placeholder-gray-500 transition-colors duration-200 focus:border-electric-500 focus:bg-ink-850;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-400 mb-1.5;
+  }
+
+  .card {
+    @apply bg-ink-850 border border-ink-700 rounded-2xl;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;
+  }
+
+  .skeleton {
+    @apply bg-gradient-to-r from-ink-800 via-ink-700 to-ink-800 bg-[length:200%_100%] animate-shimmer rounded-lg;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f0f17;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2e2e42;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3a52;
+}
+
+/* Hide scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
