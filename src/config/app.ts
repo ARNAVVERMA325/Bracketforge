@@ -4,8 +4,6 @@ export const APP_CONFIG = {
   url: import.meta.env.VITE_APP_URL || 'https://bracketforge.app',
   contactEmail: import.meta.env.VITE_APP_CONTACT_EMAIL || 'hello@bracketforge.app',
   upiId: import.meta.env.VITE_APP_UPI_ID || '',
-  planFeeINR: 300,
-  freeDuringBeta: true,
   googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
 } as const;
 

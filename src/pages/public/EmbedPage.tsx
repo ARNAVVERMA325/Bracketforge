@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { Trophy, Loader2, Eye } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { fetchBundle } from '@/lib/publicData';
 import { APP_CONFIG, STATUS_LABELS, STATUS_COLORS } from '@/config/app';
 import BracketView, { type BracketMatch } from '@/components/BracketView';
 
@@ -22,28 +22,15 @@ export default function EmbedPage() {
 
   const load = useCallback(async () => {
     if (!slug) return;
-    const { data: t } = await supabase
-      .from('tournaments')
-      .select('id, title, slug, game, format, status')
-      .eq('slug', slug)
-      .maybeSingle();
+    const bundle = await fetchBundle(slug!);
 
-    if (!t) { setLoading(false); return; }
-    setTournament(t as Tournament);
+    if (!bundle) { setLoading(false); return; }
+    setTournament(bundle.tournament as Tournament);
 
-    const { data: mData } = await supabase
-      .from('matches')
-      .select('*')
-      .eq('tournament_id', t.id)
-      .order('round, match_index', { ascending: true });
-
-    if (mData && mData.length > 0) {
-      const { data: pubPlayers } = await supabase
-        .from('players')
-        .select('id, name, team_tag')
-        .eq('tournament_id', t.id);
-      const playerMap = new Map((pubPlayers || []).map((p: any) => [p.id, p]));
-      const enriched: BracketMatch[] = (mData as any[]).map((m) => ({
+    const mData: any[] = bundle.matches || [];
+    if (mData.length > 0) {
+      const playerMap = new Map<string, any>((bundle.players || []).map((p: any) => [p.id, p] as [string, any]));
+      const enriched: BracketMatch[] = mData.map((m) => ({
         ...m,
         player1_name: m.player1_id ? playerMap.get(m.player1_id)?.name : undefined,
         player2_name: m.player2_id ? playerMap.get(m.player2_id)?.name : undefined,
@@ -105,7 +92,7 @@ export default function EmbedPage() {
 
       {/* Bracket */}
       {matches.length > 0 ? (
-        <BracketView matches={matches} format={tournament.format} compact />
+        <BracketView matches={matches} format={tournament.format} compact showNextUp={tournament.status === 'live'} />
       ) : (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <Trophy size={36} className="text-gray-700 mb-2" />

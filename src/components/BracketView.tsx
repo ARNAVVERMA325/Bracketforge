@@ -8,6 +8,8 @@ export interface BracketMatch {
   bracket_side: string;
   player1_id: string | null;
   player2_id: string | null;
+  station?: string | null;
+  loser_id?: string | null;
   player1_name?: string;
   player2_name?: string;
   player1_tag?: string;
@@ -25,6 +27,7 @@ interface BracketViewProps {
   format: string;
   onMatchClick?: (match: BracketMatch) => void;
   compact?: boolean;
+  showNextUp?: boolean;
 }
 
 function playerDisplayName(name?: string, tag?: string): string {
@@ -33,7 +36,7 @@ function playerDisplayName(name?: string, tag?: string): string {
   return name || 'TBD';
 }
 
-function MatchCard({ match, onClick, compact }: { match: BracketMatch; onClick?: () => void; compact?: boolean }) {
+function MatchCard({ match, onClick, compact, nextUp }: { match: BracketMatch; onClick?: () => void; compact?: boolean; nextUp?: boolean }) {
   const p1 = match.player1_name;
   const p2 = match.player2_name;
   const p1Tag = match.player1_tag;
@@ -56,6 +59,16 @@ function MatchCard({ match, onClick, compact }: { match: BracketMatch; onClick?:
         <div className="flex items-center gap-1.5 mb-1.5">
           <span className="w-2 h-2 rounded-full bg-crimson-500 animate-live-dot" />
           <span className="text-[10px] font-bold text-crimson-400 uppercase tracking-wider">On Now</span>
+        </div>
+      )}
+      {match.station && (
+        <div className="mb-1.5">
+          <span className="text-[10px] font-bold text-white bg-electric-700 rounded px-1.5 py-0.5">{match.station}</span>
+        </div>
+      )}
+      {nextUp && !match.is_current && (
+        <div className="mb-1.5">
+          <span className="text-[10px] font-bold text-electric-400 uppercase tracking-wider">Next up</span>
         </div>
       )}
       <div className={`flex items-center justify-between gap-2 ${compact ? 'py-1' : 'py-1.5'}`}>
@@ -81,7 +94,16 @@ function MatchCard({ match, onClick, compact }: { match: BracketMatch; onClick?:
   );
 }
 
-export default function BracketView({ matches, format, onMatchClick, compact }: BracketViewProps) {
+export default function BracketView({ matches, format, onMatchClick, compact, showNextUp }: BracketViewProps) {
+  const nextUpIds = new Set<string>(
+    showNextUp
+      ? matches
+          .filter((m) => !m.is_bye && !m.is_current && m.status !== 'completed' && m.player1_id && m.player2_id)
+          .sort((a, b) => a.round - b.round || a.match_index - b.match_index)
+          .slice(0, 2)
+          .map((m) => m.id)
+      : []
+  );
   if (matches.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -137,6 +159,7 @@ export default function BracketView({ matches, format, onMatchClick, compact }: 
                   match={match}
                   onClick={onMatchClick ? () => onMatchClick(match) : undefined}
                   compact={compact}
+                  nextUp={nextUpIds.has(match.id)}
                 />
               ))}
             </div>
@@ -156,6 +179,7 @@ export default function BracketView({ matches, format, onMatchClick, compact }: 
                   match={match}
                   onClick={onMatchClick ? () => onMatchClick(match) : undefined}
                   compact={compact}
+                  nextUp={nextUpIds.has(match.id)}
                 />
               ))}
             </div>
@@ -181,6 +205,7 @@ export default function BracketView({ matches, format, onMatchClick, compact }: 
                         match={match}
                         onClick={onMatchClick ? () => onMatchClick(match) : undefined}
                         compact={compact}
+                  nextUp={nextUpIds.has(match.id)}
                       />
                     ))}
                   </div>

@@ -1,0 +1,10 @@
+# Retries failed webhook deliveries every ~5 minutes (free). Set the repository secret APP_URL, e.g. https://brackets.example.com
+name: webhook-retry
+on:
+  schedule: [{ cron: '*/5 * * * *' }]
+  workflow_dispatch:
+jobs:
+  flush:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS -X POST "${{ secrets.APP_URL }}/api/webhooks/flush"

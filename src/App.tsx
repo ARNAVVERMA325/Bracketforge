@@ -1,4 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { TermsPage, PrivacyPage, RefundPage, ContactPage } from '@/pages/LegalPages';
+import TvPage from '@/pages/public/TvPage';
+import OverlayPage from '@/pages/public/OverlayPage';
+import RefereePage from '@/pages/public/RefereePage';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { Header, Footer } from '@/components/Layout';
 import { FullPageLoader } from '@/components/ui';
@@ -32,11 +36,13 @@ function AdminRoute({ children }: { children: ReactNode }) {
 
 function AppRoutes() {
   const { loading } = useAuth();
+  const { pathname } = useLocation();
+  const bare = /^\/(t\/[^/]+\/(embed|tv|overlay)|referee\/)/.test(pathname);
   if (loading) return <FullPageLoader />;
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Header />
+      {!bare && <Header />}
       <main className="flex-1">
         <Routes>
           <Route path="/" element={<LandingPage />} />
@@ -44,7 +50,14 @@ function AppRoutes() {
           <Route path="/signup" element={<SignUpPage />} />
           <Route path="/t/:slug" element={<PublicTournamentPage />} />
           <Route path="/t/:slug/register" element={<RegisterPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/refund" element={<RefundPage />} />
+          <Route path="/contact" element={<ContactPage />} />
+          <Route path="/referee/:slug" element={<RefereePage />} />
           <Route path="/t/:slug/embed" element={<EmbedPage />} />
+          <Route path="/t/:slug/tv" element={<TvPage />} />
+          <Route path="/t/:slug/overlay" element={<OverlayPage />} />
           <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
           <Route path="/dashboard/new" element={<ProtectedRoute><TournamentCreatePage /></ProtectedRoute>} />
           <Route path="/dashboard/t/:slug" element={<ProtectedRoute><TournamentManagePage /></ProtectedRoute>} />
@@ -53,7 +66,7 @@ function AppRoutes() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-      <Footer />
+      {!bare && <Footer />}
     </div>
   );
 }

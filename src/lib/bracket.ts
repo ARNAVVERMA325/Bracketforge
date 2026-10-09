@@ -24,6 +24,7 @@ export interface MatchData {
   next_loser_match_id: string | null;
   is_bye: boolean;
   is_current: boolean;
+  station?: string | null;
   scheduled_time: string | null;
   completed_at: string | null;
 }
@@ -68,9 +69,10 @@ export function generateSingleElimination(players: Player[], hasBronzeMatch: boo
   const slots: (Player | null)[] = new Array(bracketSize).fill(null);
 
   // Standard bracket seeding positions for proper seed placement
-  const seedPositions = getSeedPositions(bracketSize);
-  for (let i = 0; i < n; i++) {
-    slots[seedPositions[i]] = seeded[i];
+  // order[k] = index of the seed that sits in slot k (1v8, 4v5, 2v7, 3v6 ...)
+  const order = getSeedPositions(bracketSize);
+  for (let k = 0; k < bracketSize; k++) {
+    slots[k] = order[k] < n ? seeded[order[k]] : null;
   }
 
   // First round matches
@@ -138,7 +140,7 @@ export function generateSingleElimination(players: Player[], hasBronzeMatch: boo
   }
 
   // Bronze match (3rd place) - link losers of semifinals
-  if (hasBronzeMatch && numRounds >= 2) {
+  if (hasBronzeMatch && n >= 4 && numRounds >= 2) {
     const semifinalStart = matches.filter((m) => m.round < numRounds).length;
     const bronzeMatch: MatchData = {
       round: numRounds,
@@ -159,6 +161,12 @@ export function generateSingleElimination(players: Player[], hasBronzeMatch: boo
       completed_at: null,
     };
     matches.push(bronzeMatch);
+    const bronzeIdx = matches.length - 1;
+    matches.forEach((m) => {
+      if (m.bracket_side === 'winners' && m.round === numRounds - 1) {
+        m.next_loser_match_id = `idx:${bronzeIdx}`;
+      }
+    });
   }
 
   return matches;
@@ -201,8 +209,9 @@ export function generateRoundRobin(players: Player[]): MatchData[] {
   for (let round = 0; round < totalRounds; round++) {
     let matchIdx = 0;
     const p0 = playerList[0];
-    if (p0) {
-      matches.push(createRRMatch(round + 1, matchIdx++, p0, arr[len - 1]));
+    const opp = arr[len - 1];
+    if (p0 && opp) {
+      matches.push(createRRMatch(round + 1, matchIdx++, p0, opp));
     } else {
       matchIdx++;
     }
@@ -423,4 +432,154 @@ export function getPodium(matches: MatchData[], hasBronze: boolean): {
   }
 
   return { champion, runnerUp, thirdPlace };
+}
+
+// ---------------------------------------------------------------------------
+// Bracket building and result engine (pure functions, covered by bracket.test.ts)
+// ---------------------------------------------------------------------------
+
+const slotKey = (m: MatchData): 'player1_id' | 'player2_id' =>
+  m.match_index % 2 === 0 ? 'player1_id' : 'player2_id';
+
+/**
+ * Generates a complete bracket with real ids, resolved links and byes already
+ * advanced, so it can be inserted in ONE database call.
+ */
+export function buildBracket(
+  players: Player[],
+  format: string,
+  hasBronzeMatch: boolean,
+  makeId: () => string = () => crypto.randomUUID()
+): MatchData[] {
+  const raw = generateBracket(players, format, hasBronzeMatch);
+  const ids = raw.map(() => makeId());
+  const resolveRef = (v: unknown): string | null =>
+    typeof v === 'string' && v.startsWith('idx:') ? ids[parseInt(v.slice(4), 10)] ?? null : (v as string | null);
+
+  const out = raw.map((m, i) => ({
+    ...m,
+    id: ids[i],
+    next_match_id: resolveRef(m.next_match_id),
+    next_loser_match_id: resolveRef(m.next_loser_match_id),
+  }));
+
+  const byId = new Map(out.map((m) => [m.id as string, m]));
+  for (const m of out) {
+    if (m.is_bye && m.winner_id && m.next_match_id) {
+      const next = byId.get(m.next_match_id);
+      if (next) next[slotKey(m)] = m.winner_id;
+    }
+  }
+  return out;
+}
+
+export interface EngineResult {
+  matches: MatchData[];
+  /** ids of every match whose row changed (persist only these) */
+  changed: string[];
+}
+
+function resetMatch(m: MatchData) {
+  m.winner_id = null;
+  m.loser_id = null;
+  m.score = '';
+  m.match_details = [];
+  m.status = 'pending';
+  m.completed_at = null;
+  m.is_current = false;
+}
+
+/** Removes this match's winner/loser from the matches they advanced to, cascading through completed ones. */
+function removeFromNext(work: MatchData[], m: MatchData, changed: Set<string>) {
+  const targets: Array<[string | null, string | null]> = [
+    [m.next_match_id, m.winner_id],
+    [m.next_loser_match_id, m.loser_id],
+  ];
+  for (const [nextId, pid] of targets) {
+    if (!nextId || !pid) continue;
+    const n = work.find((x) => x.id === nextId);
+    if (!n) continue;
+    if (n.status === 'completed' || n.winner_id) {
+      removeFromNext(work, n, changed);
+      resetMatch(n);
+    }
+    if (n.player1_id === pid) n.player1_id = null;
+    if (n.player2_id === pid) n.player2_id = null;
+    changed.add(n.id as string);
+  }
+}
+
+export function applyResult(
+  matches: MatchData[],
+  matchId: string,
+  winnerId: string,
+  score = '',
+  details: any[] = []
+): EngineResult {
+  const work = matches.map((m) => ({ ...m }));
+  const m = work.find((x) => x.id === matchId);
+  if (!m) throw new Error('match_not_found');
+  if (m.is_bye) throw new Error('bye_match');
+  if (!m.player1_id || !m.player2_id) throw new Error('match_not_ready');
+  if (winnerId !== m.player1_id && winnerId !== m.player2_id) throw new Error('invalid_winner');
+
+  const changed = new Set<string>([matchId]);
+
+  if (m.status === 'completed' && m.winner_id === winnerId) {
+    // same winner: only the score/details are edited, downstream stays as it is
+    m.score = score;
+    m.match_details = details;
+    return { matches: work, changed: [...changed] };
+  }
+  if (m.status === 'completed' && m.winner_id) {
+    removeFromNext(work, m, changed); // winner changed: safely undo everything that depended on it
+  }
+
+  m.winner_id = winnerId;
+  m.loser_id = winnerId === m.player1_id ? m.player2_id : m.player1_id;
+  m.score = score;
+  m.match_details = details;
+  m.status = 'completed';
+  m.completed_at = new Date().toISOString();
+  m.is_current = false;
+
+  if (m.next_match_id) {
+    const n = work.find((x) => x.id === m.next_match_id);
+    if (n) { n[slotKey(m)] = m.winner_id; changed.add(n.id as string); }
+  }
+  if (m.next_loser_match_id) {
+    const n = work.find((x) => x.id === m.next_loser_match_id);
+    if (n) { n[slotKey(m)] = m.loser_id; changed.add(n.id as string); }
+  }
+  return { matches: work, changed: [...changed] };
+}
+
+export function clearResult(matches: MatchData[], matchId: string): EngineResult {
+  const work = matches.map((m) => ({ ...m }));
+  const m = work.find((x) => x.id === matchId);
+  if (!m) throw new Error('match_not_found');
+  if (m.is_bye) throw new Error('bye_match');
+  const changed = new Set<string>([matchId]);
+  removeFromNext(work, m, changed);
+  resetMatch(m);
+  return { matches: work, changed: [...changed] };
+}
+
+/** What a café TV / overlay shows: matches on now (one per station), next up, and latest results. */
+export interface TvMatch {
+  round: number; match_index: number; status: string;
+  is_bye?: boolean; is_current?: boolean; completed_at?: string | null;
+  player1_id: string | null; player2_id: string | null;
+}
+
+export function getTvSections<T extends TvMatch>(matches: T[], nextCount = 4, recentCount = 3) {
+  const playable = (m: T) => !m.is_bye && m.status !== 'completed' && !!m.player1_id && !!m.player2_id;
+  const byOrder = (a: T, b: T) => a.round - b.round || a.match_index - b.match_index;
+  const now = matches.filter((m) => playable(m) && m.is_current).sort(byOrder);
+  const next = matches.filter((m) => playable(m) && !m.is_current).sort(byOrder).slice(0, nextCount);
+  const recent = matches
+    .filter((m) => !m.is_bye && m.status === 'completed')
+    .sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || ''))
+    .slice(0, recentCount);
+  return { now, next, recent };
 }

@@ -47,6 +47,7 @@ interface Stats {
   paid_tournaments: number;
   free_during_beta: boolean;
   plan_fee_inr: number;
+  revenue_inr: number;
 }
 
 type Tab = 'stats' | 'organizers' | 'tournaments';
@@ -57,6 +58,7 @@ export default function AdminPage() {
   const [organizers, setOrganizers] = useState<Organizer[]>([]);
   const [tournaments, setTournaments] = useState<AdminTournament[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [feeInput, setFeeInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toggleId, setToggleId] = useState<{ id: string; disable: boolean } | null>(null);
@@ -123,6 +125,15 @@ export default function AdminPage() {
     setPayTournament(null);
   }
 
+  async function handleSetFee() {
+    const fee = parseInt(feeInput, 10);
+    if (Number.isNaN(fee) || fee < 0) { setError('Enter a valid price.'); return; }
+    const { error } = await supabase.rpc('admin_set_plan_fee', { p_fee: fee });
+    if (error) { setError('Could not update the price.'); return; }
+    setStats(stats ? { ...stats, plan_fee_inr: fee } : stats);
+    setFeeInput('');
+  }
+
   async function handleToggleBeta() {
     const newVal = !betaSetting;
     const { error } = await supabase.rpc('admin_update_beta_setting', { p_free: newVal });
@@ -156,6 +167,17 @@ export default function AdminPage() {
       </div>
 
       {error && <div className="mb-4"><ErrorBanner message={error} onDismiss={() => setError(null)} /></div>}
+
+      {/* Price */}
+      <Card className="mb-5">
+        <h3 className="font-semibold text-white text-sm">Price per tournament</h3>
+        <p className="text-xs text-gray-500 mt-1 mb-3">Currently {formatINR(stats?.plan_fee_inr ?? 300)}. Changing it does not affect tournaments already marked paid.</p>
+        <div className="flex gap-2">
+          <input type="number" inputMode="numeric" min={0} value={feeInput} onChange={(e) => setFeeInput(e.target.value)}
+            placeholder="New price in INR" className="w-full px-3 py-3 rounded-lg bg-ink-800 border border-ink-600 text-white text-base" />
+          <button onClick={handleSetFee} disabled={!feeInput} className="px-4 rounded-lg bg-ink-700 text-white text-sm font-semibold disabled:opacity-40">Save</button>
+        </div>
+      </Card>
 
       {/* Beta Setting */}
       <Card className="mb-5">
@@ -217,8 +239,8 @@ export default function AdminPage() {
           </Card>
           <Card className="text-center py-6">
             <TrendingUp size={24} className="text-electric-400 mx-auto mb-2" />
-            <p className="text-3xl font-bold text-white">{formatINR(stats.paid_tournaments * stats.plan_fee_inr)}</p>
-            <p className="text-xs text-gray-500 mt-1">Revenue (at {formatINR(stats.plan_fee_inr)}/tournament)</p>
+            <p className="text-3xl font-bold text-white">{formatINR(stats.revenue_inr)}</p>
+            <p className="text-xs text-gray-500 mt-1">Revenue (price recorded at payment time)</p>
           </Card>
           <Card className="text-center py-6">
             <Shield size={24} className="text-crimson-400 mx-auto mb-2" />

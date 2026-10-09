@@ -118,9 +118,12 @@ export function Footer() {
               {APP_CONFIG.name} — {APP_CONFIG.tagline}
             </span>
           </div>
-          <p className="text-xs text-gray-600">
-            Made for Indian gaming communities. Free during beta.
-          </p>
+          <nav className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-gray-500">
+            <Link to="/terms" className="hover:text-gray-300">Terms</Link>
+            <Link to="/privacy" className="hover:text-gray-300">Privacy</Link>
+            <Link to="/refund" className="hover:text-gray-300">Refunds</Link>
+            <Link to="/contact" className="hover:text-gray-300">Contact</Link>
+          </nav>
         </div>
       </div>
     </footer>

@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import {
   Trophy, Users, Calendar, MapPin, Gamepad2, Award, Eye, Loader2, ExternalLink, Code
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { fetchBundle } from '@/lib/publicData';
 import { APP_CONFIG, STATUS_LABELS, STATUS_COLORS, FORMAT_LABELS } from '@/config/app';
 import { formatIST, formatINR } from '@/lib/utils';
 import { Card, Badge, FullPageLoader } from '@/components/ui';
@@ -40,36 +40,21 @@ export default function PublicTournamentPage() {
 
   const loadTournament = useCallback(async () => {
     if (!slug) return;
-    const { data: t, error } = await supabase
-      .from('tournaments')
-      .select('id, title, slug, game, description, venue, start_datetime, poster_url, rules, prize, entry_fee, max_players, format, status, has_bronze_match, registration_open')
-      .eq('slug', slug)
-      .maybeSingle();
+    const bundle = await fetchBundle(slug!);
 
-    if (error || !t) {
+    if (!bundle) {
       setNotFound(true);
       setLoading(false);
       return;
     }
+    const t = bundle.tournament;
     setTournament(t as Tournament);
+    setPlayerCount(bundle.player_count || 0);
 
-    const [{ count }, { data: mData }] = await Promise.all([
-      supabase.from('players').select('id', { count: 'exact', head: true }).eq('tournament_id', t.id).in('status', ['pending', 'approved', 'checked_in']),
-      supabase.from('matches').select('*').eq('tournament_id', t.id).order('round, match_index', { ascending: true }),
-    ]);
-
-    setPlayerCount(count || 0);
-
-    if (mData && mData.length > 0) {
-      // We can't see player names publicly via direct query due to column-level grants
-      // We need a different approach - query public player fields
-      const { data: pubPlayers } = await supabase
-        .from('players')
-        .select('id, name, team_tag')
-        .eq('tournament_id', t.id);
-
-      const playerMap = new Map((pubPlayers || []).map((p: any) => [p.id, p]));
-      const enriched: BracketMatch[] = (mData as any[]).map((m) => ({
+    const mData: any[] = bundle.matches || [];
+    if (mData.length > 0) {
+      const playerMap = new Map<string, any>((bundle.players || []).map((p: any) => [p.id, p] as [string, any]));
+      const enriched: BracketMatch[] = mData.map((m) => ({
         ...m,
         player1_name: m.player1_id ? playerMap.get(m.player1_id)?.name : undefined,
         player2_name: m.player2_id ? playerMap.get(m.player2_id)?.name : undefined,
@@ -260,7 +245,7 @@ export default function PublicTournamentPage() {
             <h2 className="font-semibold text-white mb-4 flex items-center gap-2">
               <Trophy size={18} className="text-electric-400" /> Live Bracket
             </h2>
-            <BracketView matches={matches} format={tournament.format} />
+            <BracketView matches={matches} format={tournament.format} showNextUp={tournament.status === 'live'} />
           </Card>
         ) : (
           <Card className="mb-5">

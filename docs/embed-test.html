@@ -1,0 +1,23 @@
+<!doctype html>
+<!-- Proves the embeds work on ANOTHER origin. Serve it from a different port/domain than the app:
+       cd docs && python3 -m http.server 8081
+     then open: http://localhost:8081/embed-test.html?app=https://YOUR-APP&slug=YOUR-SLUG -->
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embed test (third-party site)</title>
+<style>body{font-family:sans-serif;max-width:900px;margin:20px auto;padding:0 12px}iframe{width:100%;border:0;border-radius:12px;background:#0a0a0f}</style></head>
+<body>
+<h1>Café website (pretend)</h1>
+<p id="msg"></p>
+<h2>Live bracket</h2><iframe id="b" height="600"></iframe>
+<h2>Registration form</h2><iframe id="r" height="640"></iframe>
+<h2>Public JSON (must contain no phone numbers)</h2><pre id="j" style="white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto"></pre>
+<script>
+const q = new URLSearchParams(location.search), app = (q.get('app')||'').replace(/\/$/,''), slug = q.get('slug');
+if(!app||!slug){ document.getElementById('msg').textContent='Add ?app=https://YOUR-APP&slug=YOUR-SLUG to the URL.'; }
+else {
+  b.src = `${app}/t/${slug}/embed`; r.src = `${app}/t/${slug}/register`;
+  fetch(`${app}/api/v1/tournaments/${slug}`).then(x=>x.text()).then(t=>{
+    j.textContent = t.slice(0,1500) + (/phone/i.test(t) ? '\n\n!!! FAIL: the word "phone" appears' : '\n\nOK: no "phone" anywhere');
+  }).catch(e=>j.textContent='Fetch failed (CORS or wrong URL): '+e);
+}
+</script></body></html>

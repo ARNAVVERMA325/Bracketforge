@@ -44,6 +44,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('Failed to load profile:', error);
       return;
     }
+    if ((data as Profile | null)?.is_disabled) {
+      await supabase.auth.signOut();
+      setProfile(null);
+      setSession(null);
+      alert('This account has been disabled. Please contact support.');
+      return;
+    }
     setProfile(data as Profile | null);
   }
 

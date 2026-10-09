@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { User, Save, LogOut, Mail, Building, MapPin, Upload, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import IntegrationsCard from '@/components/IntegrationsCard';
 import { Card, ErrorBanner, LoadingSpinner } from '@/components/ui';
 
 export default function SettingsPage() {
@@ -98,6 +99,8 @@ export default function SettingsPage() {
           </button>
         </div>
       </Card>
+
+      <IntegrationsCard />
 
       <Card className="border-crimson-600/20">
         <h3 className="font-semibold text-white mb-2">Sign Out</h3>

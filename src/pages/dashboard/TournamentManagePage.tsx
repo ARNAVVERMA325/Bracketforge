@@ -16,7 +16,8 @@ import {
   formatIST, formatDateIST, formatINR, validateIndianPhone, normalizePhone,
   generateUniqueSlug, slugify,
 } from '@/lib/utils';
-import { generateBracket, seedPlayers, resolveNextMatches, advanceWinner, correctResult } from '@/lib/bracket';
+import { buildBracket, seedPlayers, applyResult, clearResult, type MatchData } from '@/lib/bracket';
+import { toCsv, parseCsv, downloadCsv } from '@/lib/csv';
 import { Card, Badge, EmptyState, ConfirmDialog, Modal, ErrorBanner } from '@/components/ui';
 import BracketView, { type BracketMatch } from '@/components/BracketView';
 
@@ -56,6 +57,19 @@ interface Player {
   registered_at: string;
 }
 
+const MATCH_COLUMNS = [
+  'id', 'tournament_id', 'round', 'match_index', 'bracket_side', 'player1_id', 'player2_id',
+  'winner_id', 'loser_id', 'score', 'match_details', 'status', 'next_match_id',
+  'next_loser_match_id', 'is_bye', 'is_current', 'completed_at', 'station',
+] as const;
+
+/** keep only real database columns (UI rows carry extra display fields like player names) */
+function matchRow(m: any) {
+  const row: Record<string, unknown> = {};
+  for (const c of MATCH_COLUMNS) if (m[c] !== undefined) row[c] = m[c];
+  return row;
+}
+
 export default function TournamentManagePage() {
   const { slug } = useParams();
   const navigate = useNavigate();
@@ -71,6 +85,8 @@ export default function TournamentManagePage() {
   const [embedOpen, setEmbedOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [refCode, setRefCode] = useState<string | null>(null);
+  const [auditRows, setAuditRows] = useState<any[] | null>(null);
 
   // Add player form
   const [pName, setPName] = useState('');
@@ -147,7 +163,9 @@ export default function TournamentManagePage() {
 
     const { error } = await supabase.from('tournaments').update({ status: newStatus }).eq('id', tournament.id);
     if (error) {
-      setError('Could not update tournament status.');
+      setError(error.message?.includes('payment_required')
+        ? 'This tournament is unpaid. It cannot go live until payment is marked as paid by the platform admin.'
+        : 'Could not update tournament status.');
       return;
     }
     setTournament({ ...tournament, status: newStatus });
@@ -235,43 +253,18 @@ export default function TournamentManagePage() {
     setGenerating(true);
     setError(null);
 
-    // Delete existing matches
-    await supabase.from('matches').delete().eq('tournament_id', tournament.id);
-
-    // Seed players
+    // Seed players (parallel updates)
     const seeded = seedPlayers(players, tournament.seeding_method);
-    // Update seeds in DB
-    for (let i = 0; i < seeded.length; i++) {
-      await supabase.from('players').update({ seed: i + 1 }).eq('id', seeded[i].id);
-    }
+    await Promise.all(
+      seeded.map((p, i) => supabase.from('players').update({ seed: i + 1 }).eq('id', p.id))
+    );
 
-    // Generate bracket
-    const bracketMatches = generateBracket(seeded, tournament.format, tournament.has_bronze_match);
-
-    // Insert matches
-    const toInsert = bracketMatches.map((m) => ({
-      tournament_id: tournament.id,
-      round: m.round,
-      match_index: m.match_index,
-      bracket_side: m.bracket_side,
-      player1_id: m.player1_id,
-      player2_id: m.player2_id,
-      winner_id: m.winner_id,
-      loser_id: m.loser_id,
-      score: m.score,
-      match_details: m.match_details,
-      status: m.status,
-      next_match_id: m.next_match_id,
-      next_loser_match_id: m.next_loser_match_id,
-      is_bye: m.is_bye,
-      is_current: m.is_current,
-      completed_at: m.completed_at,
-    }));
-
-    const { data: inserted, error: insErr } = await supabase
+    // Build the full bracket (ids, links and byes resolved) and insert it in ONE call
+    await supabase.from('matches').delete().eq('tournament_id', tournament.id);
+    const built = buildBracket(seeded, tournament.format, tournament.has_bronze_match);
+    const { error: insErr } = await supabase
       .from('matches')
-      .insert(toInsert)
-      .select();
+      .insert(built.map((m) => matchRow({ ...m, tournament_id: tournament.id })));
 
     if (insErr) {
       setError('Could not generate bracket.');
@@ -279,72 +272,122 @@ export default function TournamentManagePage() {
       return;
     }
 
-    // Now resolve next_match_id references
-    const resolved = resolveNextMatches(
-      bracketMatches.map((m, i) => ({ ...m, id: inserted[i]?.id }))
-    );
-
-    // Update next_match_id in DB
-    for (const m of resolved) {
-      if (m.id && m.next_match_id) {
-        await supabase.from('matches').update({ next_match_id: m.next_match_id }).eq('id', m.id);
-      }
-    }
-
-    // Auto-advance bye winners
-    for (const m of resolved) {
-      if (m.is_bye && m.winner_id && m.next_match_id) {
-        const isP1Slot = m.match_index % 2 === 0;
-        await supabase.from('matches').update({
-          player1_id: isP1Slot ? m.winner_id : undefined,
-          player2_id: !isP1Slot ? m.winner_id : undefined,
-        }).eq('id', m.next_match_id);
-      }
-    }
-
     await loadTournament();
     setGenerating(false);
     setTab('bracket');
   }
 
-  async function saveScore() {
-    if (!scoreMatch || !scoreWinner) return;
-    const match = matches.find((m) => m.id === scoreMatch.id);
-    if (!match) return;
+  function exportRegistrants() {
+    if (!tournament) return;
+    const rows = players.map((p) => ({
+      name: p.name, phone: p.phone, team_tag: p.team_tag, character_loadout: p.character_loadout,
+      status: p.status, seed: p.seed ?? '',
+    }));
+    downloadCsv(`${tournament.slug}-players.csv`, toCsv(rows, ['name', 'phone', 'team_tag', 'character_loadout', 'status', 'seed']));
+  }
 
-    const loserId = scoreWinner === match.player1_id ? match.player2_id : match.player1_id;
+  function exportResults() {
+    if (!tournament) return;
+    const rows = matches
+      .filter((m) => !m.is_bye)
+      .map((m) => ({
+        round: m.bracket_side === 'bronze' ? 'Bronze' : m.round,
+        match: m.match_index + 1,
+        player1: m.player1_name ?? '',
+        player2: m.player2_name ?? '',
+        winner: m.winner_id === m.player1_id ? m.player1_name ?? '' : m.winner_id === m.player2_id ? m.player2_name ?? '' : '',
+        score: m.score,
+        status: m.status,
+      }));
+    downloadCsv(`${tournament.slug}-results.csv`, toCsv(rows, ['round', 'match', 'player1', 'player2', 'winner', 'score', 'status']));
+  }
 
-    const { error } = await supabase
-      .from('matches')
-      .update({
-        winner_id: scoreWinner,
-        loser_id: loserId,
-        score: scoreText,
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        is_current: false,
-      })
-      .eq('id', scoreMatch.id);
-
-    if (error) {
-      setError('Could not save the result.');
+  async function importPlayers(file: File) {
+    if (!tournament) return;
+    setError(null);
+    const table = parseCsv(await file.text());
+    if (table.length < 2 || table.length > 501) {
+      setError('CSV must have a header row and 1 to 500 players.');
       return;
     }
-
-    // Advance winner to next match
-    if (match.next_match_id) {
-      const isP1Slot = match.match_index % 2 === 0;
-      const nextUpdate: any = {};
-      if (isP1Slot) nextUpdate.player1_id = scoreWinner;
-      else nextUpdate.player2_id = scoreWinner;
-      await supabase.from('matches').update(nextUpdate).eq('id', match.next_match_id);
+    const header = table[0].map((h) => h.trim().toLowerCase());
+    const col = (names: string[]) => header.findIndex((h) => names.includes(h));
+    const iName = col(['name', 'player', 'player name']);
+    const iPhone = col(['phone', 'mobile', 'phone number', 'mobile number']);
+    const iTag = col(['team_tag', 'gamer tag', 'tag', 'team']);
+    const iLoadout = col(['character_loadout', 'character', 'loadout']);
+    if (iName < 0 || iPhone < 0) {
+      setError('CSV needs "name" and "phone" columns.');
+      return;
     }
-
-    // For bronze match, set 3rd place
-    if (match.bracket_side === 'bronze') {
-      // already handled
+    const seen = new Set(players.map((p) => normalizePhone(p.phone)));
+    const toInsert: any[] = [];
+    let skipped = 0;
+    for (const r of table.slice(1)) {
+      const name = (r[iName] || '').trim().slice(0, 60);
+      const phone = normalizePhone(r[iPhone] || '');
+      if (name.length < 2 || !validateIndianPhone(phone) || seen.has(phone)) { skipped++; continue; }
+      seen.add(phone);
+      toInsert.push({
+        tournament_id: tournament.id, name, phone, phone_normalized: phone,
+        team_tag: iTag >= 0 ? (r[iTag] || '').trim().slice(0, 40) : '',
+        character_loadout: iLoadout >= 0 ? (r[iLoadout] || '').trim().slice(0, 40) : '',
+        status: 'approved',
+      });
     }
+    if (tournament.max_players && players.length + toInsert.length > tournament.max_players) {
+      setError(`Import would exceed the max of ${tournament.max_players} players. Nothing was imported.`);
+      return;
+    }
+    if (toInsert.length === 0) {
+      setError(`No valid new players found (${skipped} rows skipped: bad phone, short name or duplicate).`);
+      return;
+    }
+    const { error: insErr } = await supabase.from('players').insert(toInsert);
+    if (insErr) {
+      setError('Import failed. Nothing was imported.');
+      return;
+    }
+    setError(skipped ? `Imported ${toInsert.length} players. ${skipped} rows skipped (bad phone, short name or duplicate).` : null);
+    await loadTournament();
+  }
 
+  async function createRefereeCode() {
+    if (!tournament) return;
+    const { data, error } = await supabase.rpc('set_referee_code', { p_tournament_id: tournament.id });
+    if (error) { setError('Could not create referee code.'); return; }
+    setRefCode(data as string);
+  }
+
+  async function loadAudit() {
+    if (!tournament) return;
+    const { data } = await supabase
+      .from('audit_log')
+      .select('id, actor_role, old_value, new_value, created_at')
+      .eq('tournament_id', tournament.id)
+      .order('created_at', { ascending: false })
+      .limit(30);
+    setAuditRows(data || []);
+  }
+
+  async function persistChanges(updated: MatchData[], changed: string[]) {
+    const rows = updated.filter((m) => changed.includes(m.id as string)).map(matchRow);
+    const { error } = await supabase.from('matches').upsert(rows, { onConflict: 'id' });
+    return !error;
+  }
+
+  async function saveScore() {
+    if (!scoreMatch || !scoreWinner) return;
+    try {
+      const res = applyResult(matches as unknown as MatchData[], scoreMatch.id, scoreWinner, scoreText);
+      if (!(await persistChanges(res.matches, res.changed))) {
+        setError('Could not save the result.');
+        return;
+      }
+    } catch (e: any) {
+      setError(`Could not save the result (${e.message}).`);
+      return;
+    }
     setScoreMatch(null);
     setScoreWinner('');
     setScoreText('');
@@ -353,56 +396,29 @@ export default function TournamentManagePage() {
 
   async function correctMatchResult(match: BracketMatch) {
     if (!match.winner_id) return;
-    // Reset this match
-    const { error } = await supabase
-      .from('matches')
-      .update({
-        winner_id: null,
-        loser_id: null,
-        score: '',
-        status: 'pending',
-        completed_at: null,
-      })
-      .eq('id', match.id);
-
-    if (error) return;
-
-    // Reset downstream: clear the winner from next match
-    if (match.next_match_id) {
-      const next = matches.find((m) => m.id === match.next_match_id);
-      if (next) {
-        const update: any = {};
-        if (next.player1_id === match.winner_id) update.player1_id = null;
-        if (next.player2_id === match.winner_id) update.player2_id = null;
-        update.winner_id = null;
-        update.loser_id = null;
-        update.score = '';
-        update.status = 'pending';
-        update.completed_at = null;
-        await supabase.from('matches').update(update).eq('id', next.id);
-
-        // Cascade: reset next's downstream too
-        if (next.next_match_id) {
-          const nn = matches.find((m) => m.id === next.next_match_id);
-          if (nn) {
-            const nnUpdate: any = { winner_id: null, loser_id: null, score: '', status: 'pending', completed_at: null };
-            if (nn.player1_id === next.winner_id) nnUpdate.player1_id = null;
-            if (nn.player2_id === next.winner_id) nnUpdate.player2_id = null;
-            await supabase.from('matches').update(nnUpdate).eq('id', next.next_match_id);
-          }
-        }
+    try {
+      const res = clearResult(matches as unknown as MatchData[], match.id);
+      if (!(await persistChanges(res.matches, res.changed))) {
+        setError('Could not reset the result.');
+        return;
       }
+    } catch (e: any) {
+      setError(`Could not reset the result (${e.message}).`);
+      return;
     }
-
     await loadTournament();
+  }
+
+  async function saveStation(match: BracketMatch, value: string) {
+    const v = value.trim().slice(0, 20);
+    if ((match.station || '') === v) return;
+    const { error } = await supabase.from('matches').update({ station: v || null }).eq('id', match.id);
+    if (error) { setError('Could not save the station.'); return; }
+    setMatches(matches.map((m) => (m.id === match.id ? { ...m, station: v || null } : m)));
   }
 
   async function toggleCurrent(match: BracketMatch) {
     const newVal = !match.is_current;
-    // Only one current match at a time
-    if (newVal) {
-      await supabase.from('matches').update({ is_current: false }).eq('tournament_id', tournament!.id);
-    }
     await supabase.from('matches').update({ is_current: newVal, status: newVal ? 'in_progress' : 'pending' }).eq('id', match.id);
     await loadTournament();
   }
@@ -613,6 +629,15 @@ export default function TournamentManagePage() {
               <Plus size={16} /> Add Player
             </button>
           </div>
+          <div className="flex flex-wrap gap-2 text-sm">
+            <button onClick={exportRegistrants} disabled={players.length === 0} className="px-3 py-2 rounded-lg bg-ink-700 text-white disabled:opacity-40">Export players (CSV)</button>
+            <button onClick={exportResults} disabled={matches.length === 0} className="px-3 py-2 rounded-lg bg-ink-700 text-white disabled:opacity-40">Export results (CSV)</button>
+            <label className="px-3 py-2 rounded-lg bg-ink-700 text-white cursor-pointer">
+              Import players (CSV)
+              <input type="file" accept=".csv,text/csv" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importPlayers(f); e.target.value = ''; }} />
+            </label>
+          </div>
 
           {players.length === 0 ? (
             <Card>
@@ -703,7 +728,7 @@ export default function TournamentManagePage() {
           ) : (
             <>
               <Card className="p-3">
-                <BracketView matches={matches} format={tournament.format} onMatchClick={(m) => {
+                <BracketView matches={matches} format={tournament.format} showNextUp={tournament.status === 'live'} onMatchClick={(m) => {
                   if (m.status === 'completed') {
                     setScoreMatch(m);
                   } else if (m.player1_id && m.player2_id) {
@@ -731,6 +756,12 @@ export default function TournamentManagePage() {
                         </>
                       ) : m.player1_id && m.player2_id ? (
                         <>
+                          <input
+                            defaultValue={m.station || ''} maxLength={20} placeholder="Station"
+                            onBlur={(e) => saveStation(m, e.target.value)}
+                            className="w-24 px-2 py-1.5 rounded-lg bg-ink-800 border border-ink-600 text-white text-base"
+                            aria-label="Station for this match"
+                          />
                           <button onClick={() => toggleCurrent(m)} className={`p-1.5 rounded-lg ${m.is_current ? 'text-crimson-400' : 'text-gray-500'} hover:bg-ink-600`} title={m.is_current ? 'Remove "On Now"' : 'Mark "On Now"'}>
                             <Play size={13} />
                           </button>
@@ -750,6 +781,37 @@ export default function TournamentManagePage() {
 
       {tab === 'settings' && (
         <div className="space-y-4">
+          <Card>
+            <h3 className="font-semibold text-white mb-2">Referee access</h3>
+            <p className="text-xs text-gray-500 mb-3">Referees can only enter scores while the tournament is live. Generating a new code replaces the old one.</p>
+            <button onClick={createRefereeCode} className="px-4 py-2.5 rounded-lg bg-ink-700 text-white text-sm font-semibold">Generate referee code</button>
+            {refCode && (
+              <div className="mt-3 text-sm text-gray-300">
+                <div>Code (shown once): <span className="font-mono text-white">{refCode}</span></div>
+                <div className="mt-1">Link: <span className="font-mono text-electric-400 text-xs">{window.location.origin}/referee/{tournament.slug}</span></div>
+              </div>
+            )}
+          </Card>
+          <Card>
+            <h3 className="font-semibold text-white mb-2">Result history</h3>
+            {auditRows === null ? (
+              <button onClick={loadAudit} className="px-4 py-2.5 rounded-lg bg-ink-700 text-white text-sm font-semibold">Show last 30 changes</button>
+            ) : auditRows.length === 0 ? (
+              <p className="text-sm text-gray-500">No result changes yet.</p>
+            ) : (
+              <ul className="space-y-2 text-xs text-gray-400">
+                {auditRows.map((r) => (
+                  <li key={r.id} className="border-b border-ink-700 pb-2">
+                    <span className="text-gray-300">{new Date(r.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}</span>
+                    {' · '}{r.actor_role}{' · '}
+                    {r.new_value.bracket_side === 'bronze' ? 'Bronze' : `Round ${r.new_value.round}`}
+                    {': '}{r.old_value.winner_name || 'none'} {r.old_value.score ? `(${r.old_value.score})` : ''}
+                    {' → '}{r.new_value.winner_name || 'cleared'} {r.new_value.score ? `(${r.new_value.score})` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
           <Card>
             <h3 className="font-semibold text-white mb-4">Tournament Settings</h3>
             <div className="space-y-3 text-sm">
@@ -878,6 +940,19 @@ export default function TournamentManagePage() {
           >
             <Copy size={16} /> Copy Embed Code
           </button>
+          <p className="text-sm text-gray-400 mt-4">Registration form for your website:</p>
+          <pre className="bg-ink-900 rounded-lg p-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap">
+{`<iframe src="${window.location.origin}/t/${tournament.slug}/register" width="100%" height="640" frameborder="0" style="border:none;border-radius:12px;" title="${tournament.title} - Register"></iframe>`}
+          </pre>
+          <button
+            onClick={() => navigator.clipboard.writeText(`<iframe src="${window.location.origin}/t/${tournament.slug}/register" width="100%" height="640" frameborder="0" style="border:none;border-radius:12px;" title="${tournament.title} - Register"></iframe>`)}
+            className="px-3 py-2 rounded-lg bg-ink-700 text-white text-sm font-semibold"
+          >
+            Copy registration form code
+          </button>
+          <p className="text-xs text-gray-500">Café TV screen: <span className="font-mono">{window.location.origin}/t/{tournament.slug}/tv</span></p>
+          <p className="text-xs text-gray-500">OBS overlay (Browser Source, 1280x200): <span className="font-mono">{window.location.origin}/t/{tournament.slug}/overlay</span></p>
+          <p className="text-xs text-gray-500">Public JSON for developers: <span className="font-mono">{window.location.origin}/api/v1/tournaments/{tournament.slug}</span></p>
         </div>
       </Modal>
 

@@ -32,15 +32,12 @@ export default function RegisterPage() {
   useEffect(() => {
     if (!slug) return;
     supabase
-      .from('tournaments')
-      .select('id, title, slug, game, entry_fee, max_players, registration_open, status')
-      .eq('slug', slug)
-      .maybeSingle()
+      .rpc('public_tournament_bundle', { p_slug: slug })
       .then(({ data, error }) => {
         if (error || !data) {
           setError('Tournament not found.');
         } else {
-          setTournament(data as Tournament);
+          setTournament({ ...data.tournament, player_count: data.player_count } as Tournament);
         }
         setLoading(false);
       });
@@ -58,43 +55,30 @@ export default function RegisterPage() {
 
     const normalized = normalizePhone(phone);
 
-    // Check max players
-    if (tournament.max_players) {
-      const { count } = await supabase
-        .from('players')
-        .select('id', { count: 'exact', head: true })
-        .eq('tournament_id', tournament.id)
-        .in('status', ['pending', 'approved', 'checked_in']);
-      if (count && count >= tournament.max_players) {
-        setError('This tournament is full. Maximum player limit reached.');
-        setSubmitting(false);
-        return;
-      }
-    }
+    const { data: result, error: rpcError } = await supabase.rpc('register_player', {
+      p_slug: tournament.slug,
+      p_name: name.trim(),
+      p_phone: normalized,
+      p_team_tag: tag.trim(),
+      p_character_loadout: loadout.trim(),
+    });
 
-    const { error: insertError } = await supabase
-      .from('players')
-      .insert({
-        tournament_id: tournament.id,
-        name: name.trim(),
-        phone: normalized,
-        phone_normalized: normalized,
-        team_tag: tag.trim(),
-        character_loadout: loadout.trim(),
-        status: 'pending',
-      });
-
-    if (insertError) {
-      if (insertError.code === '23505') {
-        setError('You are already registered for this tournament with this phone number.');
-      } else {
-        setError('Could not register. Please try again.');
-        console.error('Registration error:', insertError);
-      }
+    if (rpcError || !result?.ok) {
+      const code = rpcError?.message || result?.error;
+      const messages: Record<string, string> = {
+        invalid_phone: 'Please enter a valid 10-digit Indian mobile number (starts with 6, 7, 8, or 9).',
+        invalid_name: 'Please enter your name (2 to 60 characters).',
+        registration_closed: 'Registration is closed for this tournament.',
+        tournament_full: 'This tournament is full. Maximum player limit reached.',
+        already_registered: 'You are already registered for this tournament with this phone number.',
+        rate_limited: 'Too many attempts. Please wait a few minutes and try again.',
+      };
+      setError(messages[code as string] || 'Could not register. Please try again.');
       setSubmitting(false);
       return;
     }
 
+    fetch('/api/webhooks/flush', { method: 'POST' }).catch(() => {});
     setSubmitted(true);
     setSubmitting(false);
   }
